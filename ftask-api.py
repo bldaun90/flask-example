@@ -1,5 +1,5 @@
 """
-Simple REST Example using Flask-Restful Library.  Works on python 2.7 and 3.7.
+Simple REST Example using Flask-Restful Library.  Tested with Python 3.7
 
 This is a stateless example - No Global Variables are used.
 
@@ -19,7 +19,7 @@ curl http://127.0.0.1:5000/tasks/t1/task4 -X GET
 curl http://127.0.0.1:5000/tasks/t1/task4 -X DELETE
 
 // Add or Update a task
-curl http://127.0.0.1:5000/tasks/t1/task4 -X POST -v -H "Content-type: application/json" -d "{\"desc\": \"Re-Add 4th Task.\", \"dur\": \"77\"}"
+curl http://127.0.0.1:5000/tasks/t1/task4 -X POST -v -H "Content-type: application/json" -d "{\"desc\": \"Task Number 4\", \"dur\": \"77\"}"
 
 """
 from flask import Flask
