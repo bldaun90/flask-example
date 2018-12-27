@@ -15,7 +15,9 @@
 # curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X GET
 #
 # // Create or update a dataset
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset of The Day\"}"
+# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset 12 26 2018\", \"tasklist\": [{\"taskid\": \"task1\", \"desc\": \"The First Task\", \"dur\": \"11\"}, {\"taskid\": \"task2\", \"desc\": \"The Second Task\", \"dur\": \"22\"}]}"
+# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset Test\", \"tasklist\": [{\"taskid\": \"task8\", \"desc\": \"The 8th Task\", \"dur\": \"8\"}, {\"taskid\": \"task9\", \"desc\": \"The 9th Task\", \"dur\": \"9\"}]}"
+# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Change description only\"}"
 #
 # // Delete a dataset (ancestor) and its tasks (descendants)
 # curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X DELETE
@@ -41,6 +43,7 @@
 Brian Continue Here
 
 TODO
+1. Dataset PUT should accept a list of Tasks (bulk load)
 2. Tests
 5. Transfer from Bucket into Datastore
 6. Profile object
@@ -61,7 +64,7 @@ MESSAGE_SUCCESS = {"message": "success"}
 parser = reqparse.RequestParser()
 parser.add_argument('desc')
 parser.add_argument('dur')
-parser.add_argument('tasklist')
+parser.add_argument('tasklist', action='append')
 
 
 def get_client():
@@ -94,8 +97,9 @@ def new_dataset(datasetid, desc):
     dataset = Dataset(datasetid=datasetid, desc=desc)
     return dataset
 
-def create_dataset(client, key, datasetid, desc):
+def create_dataset(client, key, datasetid, desc, tasklist):
     with client.transaction():
+        # First create the dataset ancestor
         entity = datastore.Entity(key, exclude_from_indexes=['datasetid', 'desc'])
         entity.update({
             'created': datetime.datetime.utcnow(),
@@ -103,13 +107,28 @@ def create_dataset(client, key, datasetid, desc):
             'desc': desc
         })
         client.put(entity)
-        return entity.key
+        # Create new tasks
+        if (tasklist):
+            for task in tasklist:
+                tkey = get_task_key(client, task.datasetid, task.taskid)
+                create_task(client, tkey, task.datasetid, task.taskid, task.desc, task.dur)
 
-def update_dataset(client, key, desc):
+def update_dataset(client, key, desc, tasklist):
     with client.transaction():
+        # first update the dataset object
         entity = client.get(key)
         entity['desc'] = desc
         client.put(entity)
+        # replace existing tasks with new tasks
+        if (tasklist):
+            # delete existing tasks
+            query = client.query(kind='Task', ancestor=key)
+            for entity in query.fetch():
+                client.delete(entity.key)
+            # create new tasks
+            for task in tasklist:
+                tkey = get_task_key(client, task.datasetid, task.taskid)
+                create_task(client, tkey, task.datasetid, task.taskid, task.desc, task.dur)
 
 def delete_dataset(client, key):
     with client.transaction():
@@ -153,16 +172,15 @@ def new_task(datasetid, taskid, desc, dur):
     return ta
 
 def create_task(client, key, datasetid, taskid, desc, dur):
-    with client.transaction():
-        entity = datastore.Entity(key, exclude_from_indexes=['taskid', 'desc', 'dur'])
-        entity.update({
-            'created': datetime.datetime.utcnow(),
-            'taskid': taskid,
-            'desc': desc,
-            'dur': dur
-        })
-        client.put(entity)
-        return entity.key
+    entity = datastore.Entity(key, exclude_from_indexes=['taskid', 'desc', 'dur'])
+    entity.update({
+        'created': datetime.datetime.utcnow(),
+        'taskid': taskid,
+        'desc': desc,
+        'dur': dur
+    })
+    client.put(entity)
+    return entity.key
 
 def update_task(client, key, desc, dur):
     with client.transaction():
@@ -216,6 +234,16 @@ class DatasetApi(Resource):
         datasetid = kwargs["datasetid"]
         args = parser.parse_args()
         desc = args['desc']
+        tasklistarg = args['tasklist']
+
+        # Convert the input JSON to a list of task objects,
+        # which is less efficient but MUCH safer.
+        tasklist = []
+        if (tasklistarg != None):
+            for taskstr in tasklistarg:
+                dict = eval(taskstr)
+                task = new_task(datasetid, dict['taskid'], dict['desc'], dict['dur'])
+                tasklist.append(task)
 
         # existence check for dataset
         client = get_client()
@@ -223,10 +251,10 @@ class DatasetApi(Resource):
         entity = client.get(key)
         if (entity):
             # update existing dataset
-            update_dataset(client, key, desc)
+            update_dataset(client, key, desc, tasklist)
         else:
             # create new dataset
-            create_dataset(client, key, datasetid, desc)
+            create_dataset(client, key, datasetid, desc, tasklist)
 
         return MESSAGE_SUCCESS, 200
 
