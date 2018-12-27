@@ -1,54 +1,46 @@
-# REST Task Example using Flask-Restful Library in App Engine / Cloud Datastore.
-# Tested with Python 3.7
-#
-# Reference:
-#   https://cloud.google.com/datastore/docs/concepts/transactions
-#   https://en.wikipedia.org/wiki/Optimistic_concurrency_control
-#   https://cloud.google.com/datastore/docs/best-practices
-#
-#
-# // Get datasets (ancestors)
-# curl https://tidal-nectar-222020.appspot.com/taskdata -X GET
-#
-#
-# // Get dataset tasks
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X GET
-#
-# // Create or update a dataset
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset 12 26 2018\", \"tasklist\": [{\"taskid\": \"task1\", \"desc\": \"The First Task\", \"dur\": \"11\"}, {\"taskid\": \"task2\", \"desc\": \"The Second Task\", \"dur\": \"22\"}]}"
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset Test\", \"tasklist\": [{\"taskid\": \"task8\", \"desc\": \"The 8th Task\", \"dur\": \"8\"}, {\"taskid\": \"task9\", \"desc\": \"The 9th Task\", \"dur\": \"9\"}]}"
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Change description only\"}"
-#
-# // Delete a dataset (ancestor) and its tasks (descendants)
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X DELETE
-#
-#
-# // Get a task
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X GET
-#
-# // Create or Update a task
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Task Number 1\", \"dur\": \"11\"}"
-#
-# // Delete a task
-# curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X DELETE
-#
-# Object Terminology:
-#    "entity" - An object in Datastore - Equivalent to a database row.
-#    "new"    - References creating a new in-memory python object.
-#    "create" - References creating a new Entity in Datastore.
-#    "delete" - References deleting an Entity from Datastore.
-#
+"""
+REST Task Example using Flask-Restful Library in App Engine / Cloud Datastore.
+Tested with Python 3.7
+
+Reference:
+  https://cloud.google.com/datastore/docs/concepts/transactions
+  https://en.wikipedia.org/wiki/Optimistic_concurrency_control
+  https://cloud.google.com/datastore/docs/best-practices
+
+
+// Get datasets (ancestors)
+curl https://tidal-nectar-222020.appspot.com/taskdata -X GET
+
+
+// Get dataset (and tasks)
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X GET
+
+// Create or update a dataset - Replaces existing tasks
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset 12 26 2018\", \"tasklist\": [{\"taskid\": \"task1\", \"desc\": \"The First Task\", \"dur\": \"11\"}, {\"taskid\": \"task2\", \"desc\": \"The Second Task\", \"dur\": \"22\"}]}"
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset Test\", \"tasklist\": [{\"taskid\": \"task8\", \"desc\": \"The 8th Task\", \"dur\": \"8\"}, {\"taskid\": \"task9\", \"desc\": \"The 9th Task\", \"dur\": \"9\"}]}"
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Change description only\"}"
+
+// Delete a dataset (ancestor) and its tasks (descendants)
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X DELETE
+
+
+// Get a task
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X GET
+
+// Create or Update a task
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Task Number 1\", \"dur\": \"11\"}"
+
+// Delete a task
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X DELETE
+
+
+Object Terminology:
+   "entity" - An object in Datastore - Equivalent to a database row.
+   "new"    - References creating a new in-memory python object.
+   "create" - References creating a new Entity in Datastore.
+   "delete" - References deleting an Entity from Datastore.
 """
 
-Brian Continue Here
-
-TODO
-1. Dataset PUT should accept a list of Tasks (bulk load)
-2. Tests
-5. Transfer from Bucket into Datastore
-6. Profile object
-
-"""
 from flask import Flask
 from flask_restful import reqparse, abort, Api, Resource, fields, marshal
 import json
@@ -85,7 +77,8 @@ def get_task_key(client, datasetid, taskid):
 
 dataset_fields = {
     'datasetid': fields.String,
-    'desc': fields.String
+    'desc': fields.String,
+    'uri':  fields.Url('dataset_ep', absolute=True)
 }
 
 class Dataset(object):
@@ -171,6 +164,7 @@ def new_task(datasetid, taskid, desc, dur):
     ta = Task(datasetid=datasetid, taskid=taskid, desc=desc, dur=dur)
     return ta
 
+# Does not utilize a transaction because of usage in create and update dataset.
 def create_task(client, key, datasetid, taskid, desc, dur):
     entity = datastore.Entity(key, exclude_from_indexes=['taskid', 'desc', 'dur'])
     entity.update({
@@ -212,7 +206,7 @@ class DatasetListApi(Resource):
         return marshal(get_datasets(client), dataset_fields), 200
 
 # DatasetApi
-# GET - Get dataset details (tasks)
+# GET - Get dataset details (including tasks)
 # PUT - Create or Update a dataset.
 # DELETE - Delete dataset (ancestor) and all tasks (Descendants)
 class DatasetApi(Resource):
