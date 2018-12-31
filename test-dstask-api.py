@@ -1,6 +1,10 @@
 import unittest
 import requests
 import json
+import profile
+
+TEST_PROFILE_ID = "TestProfile"
+PROFILE_REPORT_URL = "https://tidal-nectar-222020.appspot.com/profile/report"
 
 BASE_URL = "https://tidal-nectar-222020.appspot.com/taskdata"
 DATASETID = "Test20190101"
@@ -25,21 +29,41 @@ def get_sorted_tasks(json_in):
     json_out.sort(key=get_row_key)
     return json_out
 
-
 class TestTaskApi(unittest.TestCase):
 
     # Test Setup Strategy
     # Setup is used to create/update a dataset before each test.
     # Teardown method is not needed because the PUT in Setup overwrites existing values.
 
+    @classmethod
+    def setUpClass(cls):
+        profile.clear(TEST_PROFILE_ID)
+
+    @classmethod
+    def tearDownClass(cls):
+        # Remove the test dataset
+        profile.clock_start("tearDownClass", TEST_PROFILE_ID)
+        url = DATASET_URL
+        response = requests.delete(url)
+        profile.clock_stop("tearDownClass", TEST_PROFILE_ID)
+
+        # Print Profile reports
+        print(profile.report(TEST_PROFILE_ID))
+        response = requests.get(PROFILE_REPORT_URL)
+        print("\nServer Profile:")
+        print(json.dumps(response.json(), indent=4))
+
     def setUp(self):
         # Use Dataset PUT to initialize an entire dataset.  PUT overwrites all values, including tasks.
+        profile.clock_start("setUp", TEST_PROFILE_ID)
         url = DATASET_URL
         payload = {"desc": "Test Dataset 01 01 2019", "tasklist": [{"taskid": "task1", "desc": "The 1st Task", "dur": "11"}, {"taskid": "task2", "desc": "The 2nd Task", "dur": "22"}, {"taskid": "task3", "desc": "The 3rd Task", "dur": "33"}]}
         response = requests.put(url, json=payload)
+        profile.clock_stop("setUp", TEST_PROFILE_ID)
 
     # def tearDown(self):
     #     print("tearDown")
+    #     print(profile.report(TEST_PROFILE_ID))
 
     #####################################
 
@@ -65,9 +89,9 @@ class TestTaskApi(unittest.TestCase):
         self.assertEqual(json, test_get1)
 
     def test_update_dataset(self):
-        url = DATASET_URL
 
         # Update the description only - Tasks should NOT be unaffected.
+        url = DATASET_URL
         payload = {"desc": "Change Description Only"}
         response = requests.put(url, json=payload)
         self.assertEqual(response.json(), MESSAGE_SUCCESS)

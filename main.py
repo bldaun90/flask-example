@@ -7,6 +7,12 @@ Reference:
   https://en.wikipedia.org/wiki/Optimistic_concurrency_control
   https://cloud.google.com/datastore/docs/best-practices
 
+// Profile
+curl https://tidal-nectar-222020.appspot.com/profile/enable -X GET
+curl https://tidal-nectar-222020.appspot.com/profile/disable -X GET
+curl https://tidal-nectar-222020.appspot.com/profile/clear -X GET
+curl https://tidal-nectar-222020.appspot.com/profile/report -X GET
+
 
 // Get datasets (ancestors)
 curl https://tidal-nectar-222020.appspot.com/taskdata -X GET
@@ -47,6 +53,7 @@ import json
 import os
 import datetime
 from google.cloud import datastore
+import profile
 
 app = Flask(__name__)
 api = Api(app)
@@ -70,6 +77,34 @@ def get_task_key(client, datasetid, taskid):
     # create a key with Ancestor 'Dataset' key name
     key = client.key('Dataset', datasetid, 'Task', taskid)
     return key
+
+#
+# Profile Output
+#
+
+clock_fields = {
+    'profile_id': fields.String,
+    'clock_id': fields.String,
+    'elapsed_time': fields.Integer,
+    'start_num': fields.Integer,
+    'stop_num': fields.Integer
+}
+
+class ClockOutput(object):
+    def __init__(self, profile_id, clock_id, elapsed_time, start_num, stop_num):
+        self.profile_id = profile_id
+        self.clock_id = clock_id
+        self.elapsed_time = elapsed_time
+        self.start_num = start_num
+        self.stop_num = stop_num
+
+def get_clocks():
+    outlist = []
+    clist = profile.get_clocks()
+    for pclock in clist:
+        clockout = ClockOutput(profile_id=pclock.profile_id, clock_id=pclock.clock_id, elapsed_time=pclock.elapsed_time, start_num=pclock.start_num, stop_num=pclock.stop_num)
+        outlist.append(clockout)
+    return outlist
 
 #
 # DATASET
@@ -202,8 +237,11 @@ def get_tasks(client, key, datasetid):
 # GET - Get task datasets (ancestors)
 class DatasetListApi(Resource):
     def get(self, **kwargs):
+        profile.clock_start("GET_Datasets")
         client = get_client()
-        return marshal(get_datasets(client), dataset_fields), 200
+        datasets = get_datasets(client)
+        profile.clock_stop("GET_Datasets")
+        return marshal(datasets, dataset_fields), 200
 
 # DatasetApi
 # GET - Get dataset details (including tasks)
@@ -211,19 +249,23 @@ class DatasetListApi(Resource):
 # DELETE - Delete dataset (ancestor) and all tasks (Descendants)
 class DatasetApi(Resource):
     def get(self, **kwargs):
+        profile.clock_start("GET_Dataset")
         # existence check for dataset
         datasetid = kwargs["datasetid"]
         client = get_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
+            profile.clock_stop("GET_Dataset")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
         # get tasks and return
         tasks = get_tasks(client, key, datasetid)
+        profile.clock_stop("GET_Dataset")
         return marshal(tasks, task_fields), 200
 
     def put(self, **kwargs):
+        profile.clock_start("PUT_Dataset")
         # get values
         datasetid = kwargs["datasetid"]
         args = parser.parse_args()
@@ -250,18 +292,22 @@ class DatasetApi(Resource):
             # create new dataset
             create_dataset(client, key, datasetid, desc, tasklist)
 
+        profile.clock_stop("PUT_Dataset")
         return MESSAGE_SUCCESS, 200
 
     def delete(self, **kwargs):
+        profile.clock_start("DELETE_Dataset")
         # existence check for dataset
         datasetid = kwargs["datasetid"]
         client = get_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
+            profile.clock_stop("DELETE_Dataset")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
         delete_dataset(client, key)
+        profile.clock_stop("DELETE_Dataset")
         return MESSAGE_SUCCESS, 200
 
 # TaskApi
@@ -270,6 +316,7 @@ class DatasetApi(Resource):
 # DELETE - Delete a task
 class TaskApi(Resource):
     def get(self, **kwargs):
+        profile.clock_start("GET_Task")
         # get values
         datasetid = kwargs["datasetid"]
         taskid = kwargs["taskid"]
@@ -279,19 +326,23 @@ class TaskApi(Resource):
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
+            profile.clock_stop("GET_Task")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
         # existence check for task
         key = get_task_key(client, datasetid, taskid)
         entity = client.get(key)
         if (not entity):
+            profile.clock_stop("GET_Task")
             abort(404, message="Task {} does not exist".format(taskid))
 
         # Return task
         task = new_task(datasetid, taskid, entity['desc'], entity['dur'])
+        profile.clock_stop("GET_Task")
         return marshal(task, task_fields), 200
 
     def put(self, **kwargs):
+        profile.clock_start("PUT_Task")
         # get values
         args = parser.parse_args()
         desc = args['desc']
@@ -304,6 +355,7 @@ class TaskApi(Resource):
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
+            profile.clock_stop("PUT_Task")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
         # Update if the task exists, otherwise create a new task
@@ -316,9 +368,11 @@ class TaskApi(Resource):
             # Create new task
             create_task(client, key, datasetid, taskid, desc, dur)
 
+        profile.clock_stop("PUT_Task")
         return MESSAGE_SUCCESS, 200
 
     def delete(self, **kwargs):
+        profile.clock_start("DELETE_Task")
         # get values
         datasetid = kwargs["datasetid"]
         taskid = kwargs["taskid"]
@@ -328,22 +382,41 @@ class TaskApi(Resource):
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
+            profile.clock_stop("DELETE_Task")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
         # existence check for task
         key = get_task_key(client, datasetid, taskid)
         entity = client.get(key)
         if (not entity):
+            profile.clock_stop("DELETE_Task")
             abort(404, message="Task {} does not exist".format(taskid))
 
         # Delete task and return
         delete_task(client, key)
+        profile.clock_stop("DELETE_Task")
         return MESSAGE_SUCCESS, 200
+
+# GET - General purpose get for Profile object testing - TESTING ONLY!
+class ProfileApi(Resource):
+    def get(self, **kwargs):
+        operation = kwargs["operation"]
+        if (operation == "report"):
+            return marshal(get_clocks(), clock_fields), 200
+        else:
+            if (operation == "enable"):
+                profile.enable()
+            elif (operation == "disable"):
+                profile.disable()
+            elif (operation == "clear"):
+                profile.clear()
+            return MESSAGE_SUCCESS, 200
 
 ## Api resource routing
 api.add_resource(DatasetListApi, '/taskdata', endpoint='datasetlist_ep')
 api.add_resource(DatasetApi, '/taskdata/<datasetid>', endpoint='dataset_ep')
 api.add_resource(TaskApi, '/taskdata/<datasetid>/<taskid>', endpoint='task_ep')
+api.add_resource(ProfileApi, '/profile/<operation>', endpoint='profile_ep')
 
 if __name__ == '__main__':
     app.run(debug=True)
