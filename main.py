@@ -7,6 +7,7 @@ Reference:
   https://en.wikipedia.org/wiki/Optimistic_concurrency_control
   https://cloud.google.com/datastore/docs/best-practices
 
+
 // Profile
 curl https://tidal-nectar-222020.appspot.com/profile/enable -X GET
 curl https://tidal-nectar-222020.appspot.com/profile/disable -X GET
@@ -14,30 +15,36 @@ curl https://tidal-nectar-222020.appspot.com/profile/clear -X GET
 curl https://tidal-nectar-222020.appspot.com/profile/report -X GET
 
 
+// Load (Create) Dataset from Bucket:  bucket/<bucketname>/<filename>/<datasetid>
+curl https://tidal-nectar-222020.appspot.com/bucket/tidal-nectar-222020-datasets/tasks-1/Task20190107 -X GET
+curl https://tidal-nectar-222020.appspot.com/bucket/tidal-nectar-222020-datasets/task400/Task20190107 -X GET
+
+
 // Get datasets (ancestors)
 curl https://tidal-nectar-222020.appspot.com/taskdata -X GET
 
 
 // Get dataset (and tasks)
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X GET
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X GET
 
 // Create or update a dataset - Replaces existing tasks
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset 12 26 2018\", \"tasklist\": [{\"taskid\": \"task1\", \"desc\": \"The First Task\", \"dur\": \"11\"}, {\"taskid\": \"task2\", \"desc\": \"The Second Task\", \"dur\": \"22\"}]}"
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset Test\", \"tasklist\": [{\"taskid\": \"task8\", \"desc\": \"The 8th Task\", \"dur\": \"8\"}, {\"taskid\": \"task9\", \"desc\": \"The 9th Task\", \"dur\": \"9\"}]}"
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Change description only\"}"
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset 12 26 2018\", \"tasklist\": [{\"taskid\": \"task1\", \"desc\": \"The First Task\", \"dur\": \"11\"}, {\"taskid\": \"task2\", \"desc\": \"The Second Task\", \"dur\": \"22\"}]}"
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset Test\", \"tasklist\": [{\"taskid\": \"task8\", \"desc\": \"The 8th Task\", \"dur\": \"8\"}, {\"taskid\": \"task9\", \"desc\": \"The 9th Task\", \"dur\": \"9\"}]}"
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Change description only\"}"
 
 // Delete a dataset (ancestor) and its tasks (descendants)
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226 -X DELETE
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X DELETE
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190107 -X DELETE
 
 
 // Get a task
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X GET
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102/task1 -X GET
 
 // Create or Update a task
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Task Number 1\", \"dur\": \"11\"}"
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102/task11 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Task Number 1\", \"dur\": \"11\"}"
 
 // Delete a task
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20181226/task1 -X DELETE
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102/task1 -X DELETE
 
 
 Object Terminology:
@@ -52,7 +59,7 @@ from flask_restful import reqparse, abort, Api, Resource, fields, marshal
 import json
 import os
 import datetime
-from google.cloud import datastore
+from google.cloud import datastore, storage
 import profile
 
 app = Flask(__name__)
@@ -66,7 +73,10 @@ parser.add_argument('dur')
 parser.add_argument('tasklist', action='append')
 
 
-def get_client():
+def get_storage_client():
+    return storage.Client()
+
+def get_datastore_client():
     return datastore.Client()
 
 def get_dataset_key(client, datasetid):
@@ -105,6 +115,45 @@ def get_clocks():
         clockout = ClockOutput(profile_id=pclock.profile_id, clock_id=pclock.clock_id, elapsed_time=pclock.elapsed_time, start_num=pclock.start_num, stop_num=pclock.stop_num)
         outlist.append(clockout)
     return outlist
+
+#
+# BUCKET LOAD (into Datastore)
+#
+DELIMITER = ","
+NEWLINE = "\n"
+FILE_EXTENSION = ".csv"
+
+# This is a shortcut for small files.
+# For large files we need to implement Dataflow.
+def create_dataset_from_bucket(datastore_client, dataset_key, datasetid, bucket, filename):
+    # get dataset rows from the bucket file
+    filename = filename + FILE_EXTENSION
+    blob = bucket.get_blob(filename)
+    blobbytes = blob.download_as_string()
+    blobstr = blobbytes.decode('utf8')
+
+    # create dataset and tasks within a transaction
+    with datastore_client.transaction():
+        # First create the dataset ancestor
+        desc = "Dataset Loaded from Bucket"
+        entity = datastore.Entity(dataset_key, exclude_from_indexes=['datasetid', 'desc'])
+        entity.update({
+            'created': datetime.datetime.utcnow(),
+            'datasetid': datasetid,
+            'desc': desc
+        })
+        datastore_client.put(entity)
+
+        # Create new tasks
+        lines = blobstr.split(NEWLINE)
+        for line in lines:
+            values = line.split(DELIMITER)
+            if (len(values) > 2):
+                taskid = values[0]
+                taskdesc = values[1]
+                taskdur = values[2]
+                tkey = get_task_key(datastore_client, datasetid, taskid)
+                create_task(datastore_client, tkey, datasetid, taskid, taskdesc, taskdur)
 
 #
 # DATASET
@@ -238,7 +287,7 @@ def get_tasks(client, key, datasetid):
 class DatasetListApi(Resource):
     def get(self, **kwargs):
         profile.clock_start("GET_Datasets")
-        client = get_client()
+        client = get_datastore_client()
         datasets = get_datasets(client)
         profile.clock_stop("GET_Datasets")
         return marshal(datasets, dataset_fields), 200
@@ -252,7 +301,7 @@ class DatasetApi(Resource):
         profile.clock_start("GET_Dataset")
         # existence check for dataset
         datasetid = kwargs["datasetid"]
-        client = get_client()
+        client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
@@ -282,7 +331,7 @@ class DatasetApi(Resource):
                 tasklist.append(task)
 
         # existence check for dataset
-        client = get_client()
+        client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if (entity):
@@ -299,7 +348,7 @@ class DatasetApi(Resource):
         profile.clock_start("DELETE_Dataset")
         # existence check for dataset
         datasetid = kwargs["datasetid"]
-        client = get_client()
+        client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
@@ -308,6 +357,38 @@ class DatasetApi(Resource):
 
         delete_dataset(client, key)
         profile.clock_stop("DELETE_Dataset")
+        return MESSAGE_SUCCESS, 200
+
+# BucketApi
+# GET    - Load data from a bucket file into Datastore:  /bucket/<bucketname>/<filename>/<datasetid>
+class BucketApi(Resource):
+    def get(self, **kwargs):
+        profile.clock_start("GET_Bucket")
+        # get values
+        bucketname = kwargs["bucketname"]
+        filename = kwargs["filename"]
+        datasetid = kwargs["datasetid"]
+
+        # existence check for dataset
+        datastore_client = get_datastore_client()
+        dataset_key = get_dataset_key(datastore_client, datasetid)
+        entity = datastore_client.get(dataset_key)
+        if entity:
+            profile.clock_stop("GET_Bucket")
+            abort(406, message="Dataset {} already exists".format(datasetid))
+
+        # existence check for bucket
+        storage_client = get_storage_client()
+        try:
+            bucket = storage_client.get_bucket(bucketname)
+        except:
+            profile.clock_stop("GET_Bucket")
+            abort(404, message="Bucket {} does not exist".format(bucketname))
+
+        # process bucket/file
+        create_dataset_from_bucket(datastore_client, dataset_key, datasetid, bucket, filename)
+
+        profile.clock_stop("GET_Bucket")
         return MESSAGE_SUCCESS, 200
 
 # TaskApi
@@ -322,7 +403,7 @@ class TaskApi(Resource):
         taskid = kwargs["taskid"]
 
         # existence check for dataset
-        client = get_client()
+        client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
@@ -351,7 +432,7 @@ class TaskApi(Resource):
         taskid = kwargs["taskid"]
 
         # existence check for dataset
-        client = get_client()
+        client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
@@ -378,7 +459,7 @@ class TaskApi(Resource):
         taskid = kwargs["taskid"]
 
         # existence check for dataset
-        client = get_client()
+        client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
         if not entity:
@@ -412,10 +493,12 @@ class ProfileApi(Resource):
                 profile.clear()
             return MESSAGE_SUCCESS, 200
 
+
 ## Api resource routing
 api.add_resource(DatasetListApi, '/taskdata', endpoint='datasetlist_ep')
 api.add_resource(DatasetApi, '/taskdata/<datasetid>', endpoint='dataset_ep')
 api.add_resource(TaskApi, '/taskdata/<datasetid>/<taskid>', endpoint='task_ep')
+api.add_resource(BucketApi, '/bucket/<bucketname>/<filename>/<datasetid>', endpoint='bucket_ep')
 api.add_resource(ProfileApi, '/profile/<operation>', endpoint='profile_ep')
 
 if __name__ == '__main__':
