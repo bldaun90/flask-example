@@ -16,8 +16,7 @@ curl https://tidal-nectar-222020.appspot.com/profile/report -X GET
 
 
 // Load (Create) Dataset from Bucket:  bucket/<bucketname>/<filename>/<datasetid>
-curl https://tidal-nectar-222020.appspot.com/bucket/tidal-nectar-222020-datasets/tasks-1/Task20190107 -X GET
-curl https://tidal-nectar-222020.appspot.com/bucket/tidal-nectar-222020-datasets/task400/Task20190107 -X GET
+curl https://tidal-nectar-222020.appspot.com/bucket/tidal-nectar-222020-datasets/task1000/Task20190107 -X GET
 
 
 // Get datasets (ancestors)
@@ -25,7 +24,7 @@ curl https://tidal-nectar-222020.appspot.com/taskdata -X GET
 
 
 // Get dataset (and tasks)
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X GET
+curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190107 -X GET
 
 // Create or update a dataset - Replaces existing tasks
 curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Dataset 12 26 2018\", \"tasklist\": [{\"taskid\": \"task1\", \"desc\": \"The First Task\", \"dur\": \"11\"}, {\"taskid\": \"task2\", \"desc\": \"The Second Task\", \"dur\": \"22\"}]}"
@@ -33,7 +32,7 @@ curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X PUT -v -H 
 curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X PUT -v -H "Content-type: application/json" -d "{\"desc\": \"Change description only\"}"
 
 // Delete a dataset (ancestor) and its tasks (descendants)
-curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190102 -X DELETE
+curl https://tidal-nectar-222020.appspot.com/taskdata/Test20190101 -X DELETE
 curl https://tidal-nectar-222020.appspot.com/taskdata/Task20190107 -X DELETE
 
 
@@ -119,41 +118,62 @@ def get_clocks():
 #
 # BUCKET LOAD (into Datastore)
 #
+BATCH_SIZE = 400
 DELIMITER = ","
 NEWLINE = "\n"
 FILE_EXTENSION = ".csv"
 
 # This is a shortcut for small files.
-# For large files we need to implement Dataflow.
+# For large files we need to implement readline.
 def create_dataset_from_bucket(datastore_client, dataset_key, datasetid, bucket, filename):
     # get dataset rows from the bucket file
+    profile.clock_start("b_blobstr")
     filename = filename + FILE_EXTENSION
     blob = bucket.get_blob(filename)
     blobbytes = blob.download_as_string()
     blobstr = blobbytes.decode('utf8')
+    profile.clock_stop("b_blobstr")
 
-    # create dataset and tasks within a transaction
-    with datastore_client.transaction():
-        # First create the dataset ancestor
-        desc = "Dataset Loaded from Bucket"
-        entity = datastore.Entity(dataset_key, exclude_from_indexes=['datasetid', 'desc'])
-        entity.update({
-            'created': datetime.datetime.utcnow(),
-            'datasetid': datasetid,
-            'desc': desc
-        })
-        datastore_client.put(entity)
+    # First create the dataset ancestor
+    profile.clock_start("b_ancestor")
+    desc = "Dataset Loaded from Bucket"
+    entity = datastore.Entity(dataset_key, exclude_from_indexes=['datasetid', 'desc'])
+    entity.update({
+        'created': datetime.datetime.utcnow(),
+        'datasetid': datasetid,
+        'desc': desc
+    })
+    datastore_client.put(entity)
+    profile.clock_stop("b_ancestor")
 
-        # Create new tasks
-        lines = blobstr.split(NEWLINE)
-        for line in lines:
-            values = line.split(DELIMITER)
-            if (len(values) > 2):
-                taskid = values[0]
-                taskdesc = values[1]
-                taskdur = values[2]
-                tkey = get_task_key(datastore_client, datasetid, taskid)
-                create_task(datastore_client, tkey, datasetid, taskid, taskdesc, taskdur)
+    # Next create new tasks - Commit every N rows.
+    profile.clock_start("b_tasks")
+    lines = blobstr.split(NEWLINE)
+    lines_processed = 0
+    batch = None
+    for line in lines:
+        # batch start
+        if (lines_processed == 0):
+            batch = datastore_client.batch()
+            batch.begin()
+        # process the line
+        values = line.split(DELIMITER)
+        if (len(values) > 2):
+            taskid = values[0]
+            taskdesc = values[1]
+            taskdur = values[2]
+            tkey = get_task_key(datastore_client, datasetid, taskid)
+            create_task(datastore_client, tkey, datasetid, taskid, taskdesc, taskdur)
+        lines_processed += 1
+        # batch end / commit
+        if (lines_processed >= BATCH_SIZE and batch is not None):
+            batch.commit()
+            lines_processed = 0
+
+    # Finish batch processing (after loop processing)
+    if (lines_processed > 0 and batch is not None):
+        batch.commit()
+    profile.clock_stop("b_tasks")
 
 #
 # DATASET
@@ -175,46 +195,45 @@ def new_dataset(datasetid, desc):
     return dataset
 
 def create_dataset(client, key, datasetid, desc, tasklist):
-    with client.transaction():
-        # First create the dataset ancestor
-        entity = datastore.Entity(key, exclude_from_indexes=['datasetid', 'desc'])
-        entity.update({
-            'created': datetime.datetime.utcnow(),
-            'datasetid': datasetid,
-            'desc': desc
-        })
-        client.put(entity)
-        # Create new tasks
-        if (tasklist):
-            for task in tasklist:
-                tkey = get_task_key(client, task.datasetid, task.taskid)
-                create_task(client, tkey, task.datasetid, task.taskid, task.desc, task.dur)
+    # First create the dataset ancestor
+    entity = datastore.Entity(key, exclude_from_indexes=['datasetid', 'desc'])
+    entity.update({
+        'created': datetime.datetime.utcnow(),
+        'datasetid': datasetid,
+        'desc': desc
+    })
+    client.put(entity)
+
+    # Create new tasks
+    if (tasklist):
+        for task in tasklist:
+            tkey = get_task_key(client, task.datasetid, task.taskid)
+            create_task(client, tkey, task.datasetid, task.taskid, task.desc, task.dur)
 
 def update_dataset(client, key, desc, tasklist):
-    with client.transaction():
-        # first update the dataset object
-        entity = client.get(key)
-        entity['desc'] = desc
-        client.put(entity)
-        # replace existing tasks with new tasks
-        if (tasklist):
-            # delete existing tasks
-            query = client.query(kind='Task', ancestor=key)
-            for entity in query.fetch():
-                client.delete(entity.key)
-            # create new tasks
-            for task in tasklist:
-                tkey = get_task_key(client, task.datasetid, task.taskid)
-                create_task(client, tkey, task.datasetid, task.taskid, task.desc, task.dur)
+    # first update the dataset object
+    entity = client.get(key)
+    entity['desc'] = desc
+    client.put(entity)
 
-def delete_dataset(client, key):
-    with client.transaction():
-        # First delete all of the descendant Task entities
+    # replace existing tasks with new tasks
+    if (tasklist):
+        # delete existing tasks
         query = client.query(kind='Task', ancestor=key)
         for entity in query.fetch():
             client.delete(entity.key)
-        # Then delete the ancestor Dataset entity
-        client.delete(key)
+        # create new tasks
+        for task in tasklist:
+            tkey = get_task_key(client, task.datasetid, task.taskid)
+            create_task(client, tkey, task.datasetid, task.taskid, task.desc, task.dur)
+
+def delete_dataset(client, key):
+    # First delete all of the descendant Task entities
+    query = client.query(kind='Task', ancestor=key)
+    for entity in query.fetch():
+        client.delete(entity.key)
+    # Then delete the ancestor Dataset entity
+    client.delete(key)
 
 def get_datasets(client):
     dlist = []
@@ -248,7 +267,6 @@ def new_task(datasetid, taskid, desc, dur):
     ta = Task(datasetid=datasetid, taskid=taskid, desc=desc, dur=dur)
     return ta
 
-# Does not utilize a transaction because of usage in create and update dataset.
 def create_task(client, key, datasetid, taskid, desc, dur):
     entity = datastore.Entity(key, exclude_from_indexes=['taskid', 'desc', 'dur'])
     entity.update({
@@ -261,15 +279,13 @@ def create_task(client, key, datasetid, taskid, desc, dur):
     return entity.key
 
 def update_task(client, key, desc, dur):
-    with client.transaction():
-        entity = client.get(key)
-        entity['desc'] = desc
-        entity['dur'] = dur
-        client.put(entity)
+    entity = client.get(key)
+    entity['desc'] = desc
+    entity['dur'] = dur
+    client.put(entity)
 
 def delete_task(client, key):
-    with client.transaction():
-        client.delete(key)
+    client.delete(key)
 
 def get_tasks(client, key, datasetid):
     tlist = []
@@ -304,7 +320,7 @@ class DatasetApi(Resource):
         client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
-        if not entity:
+        if (not entity):
             profile.clock_stop("GET_Dataset")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
@@ -351,7 +367,7 @@ class DatasetApi(Resource):
         client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
-        if not entity:
+        if (not entity):
             profile.clock_stop("DELETE_Dataset")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
@@ -406,7 +422,7 @@ class TaskApi(Resource):
         client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
-        if not entity:
+        if (not entity):
             profile.clock_stop("GET_Task")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
@@ -435,7 +451,7 @@ class TaskApi(Resource):
         client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
-        if not entity:
+        if (not entity):
             profile.clock_stop("PUT_Task")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
@@ -462,7 +478,7 @@ class TaskApi(Resource):
         client = get_datastore_client()
         key = get_dataset_key(client, datasetid)
         entity = client.get(key)
-        if not entity:
+        if (not entity):
             profile.clock_stop("DELETE_Task")
             abort(404, message="Dataset {} does not exist".format(datasetid))
 
